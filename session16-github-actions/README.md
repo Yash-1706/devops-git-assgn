@@ -35,7 +35,7 @@ Every output block below is real; nothing is typed in by hand. I labelled the so
 |---|---|
 | **GitHub** | read-only data pulled with the `gh` CLI (`gh run view`, `gh api` GET calls) from the real runs of the public repository, plus screenshots of public pages |
 | **Local** | I re-ran the same commands on my own laptop (Windows 11, Docker Desktop, Git Bash) in a clean copy of the project |
-| **Not run** | things that cannot be run without pushing: `ci-cd-with-artifacts.yml` has never run on GitHub (nothing was pushed for this homework), and the `deploy` job has never run at all |
+| **Not run** | things that cannot be run without pushing: `ci-cd-with-artifacts.yml` has never run on GitHub (it was written for this homework and never pushed to the project repository where `ci-cd.yml` runs), and the `deploy` job has never run at all |
 
 Colour codes were removed from tool output and long outputs are cut where I say so ("output cut"). The line `# exit code: N` after a command is added by my script, it is not printed by the tool.
 
@@ -803,7 +803,7 @@ _The repository page: public, last commit with a green check mark._
 
 ## Artifacts: the improved workflow (NOT yet run on GitHub)
 
-> **Status: not run.** [`workflows/ci-cd-with-artifacts.yml`](workflows/ci-cd-with-artifacts.yml) has never run on GitHub because nothing was pushed for this homework. What I could do is lint it with `actionlint` and run its new commands locally; both are shown below.
+> **Status: not run.** [`workflows/ci-cd-with-artifacts.yml`](workflows/ci-cd-with-artifacts.yml) has never run on GitHub: it was written for this homework and never pushed to the project repository where `ci-cd.yml` runs (in this homework repository it sits inside a session folder, and GitHub only runs workflows from the root `.github/workflows`). What I could do is lint it with `actionlint` and run its new commands locally; both are shown below.
 
 It is the real workflow plus three additions:
 
@@ -1352,7 +1352,7 @@ remaining s16- images: 0
 | Docker builds + Trivy gate | yes (0 HIGH/CRITICAL) | docker builds only | |
 | Push to GHCR (tag = commit SHA) | yes, both images | | |
 | `deploy` to EKS | **skipped by design** | | never run, no AWS secrets, `DEPLOY_ENABLED` unset |
-| `ci-cd-with-artifacts.yml` | | actionlint + its new commands run locally | **has not run on GitHub** (nothing was pushed) |
+| `ci-cd-with-artifacts.yml` | | actionlint + its new commands run locally | **has not run on GitHub** (never pushed to the project repository) |
 | Pull-request run | | | no pull request has been opened, all 4 runs are `push` |
 
 ## What I learned

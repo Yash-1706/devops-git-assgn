@@ -40,7 +40,7 @@ This repository contains my solutions to the DevOps course homework (Linux, shel
 
 | Item | Why | What I did instead |
 |---|---|---|
-| GitHub Actions run of the new workflows (`ci-cd-with-artifacts.yml`, `devsecops.yml`) | needs a push that triggers them on GitHub | linted with `actionlint`, every tool they call was run locally; the existing `ci-cd.yml` ran on GitHub (4 green runs, shown in Session 16) |
+| GitHub Actions run of the new workflows (`ci-cd-with-artifacts.yml`, `devsecops.yml`) | GitHub only runs workflows from the root `.github/workflows` of a repository; here they sit inside session folders | linted with `actionlint`, every tool they call was run locally; the existing `ci-cd.yml` ran on GitHub (4 green runs, shown in Session 16) |
 | Terraform `plan/apply/destroy` against real AWS | needs a real, billable AWS account | `fmt`, `init`, `validate`, and a **real apply and destroy against a local AWS emulator** (Sessions 18 and 19) |
 | EKS and a container registry in the cloud | cost and accounts | Minikube with locally loaded images (final project) |
 | Traces (third pillar of observability) | a single-service demo has nothing to trace across | explained in the notes (Session 20) |

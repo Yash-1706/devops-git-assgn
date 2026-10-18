@@ -82,7 +82,7 @@ The stages happen in the required order: every box starts only when what it depe
 
 | | GitHub (real runs) | Local (my laptop) | Not run |
 |---|---|---|---|
-| `devsecops.yml` as written | | linted with actionlint; its scan commands run locally with the same flags | **never executed on GitHub, nothing was pushed** |
+| `devsecops.yml` as written | | linted with actionlint; its scan commands run locally with the same flags | **never executed on GitHub** (never pushed to the project repository) |
 | Real workflow `ci-cd.yml` of StockPilot | 4 successful runs (test, secret scan, Trivy gate, GHCR push) | | `deploy` job: skipped by design |
 | SAST, SCA | | Semgrep, pip-audit, npm audit | not part of the real GitHub pipeline yet |
 | Kubernetes manifests | | `kubeconform`, Trivy config scan, read-only filesystem smoke test | never applied to a cluster |
@@ -250,7 +250,7 @@ They need no config file; the settings are the command-line flags in [`run-secur
 
 ## 2. The workflow: `devsecops.yml`
 
-> **Status: NOT YET RUN ON GITHUB.** Nothing was pushed for this homework, so this workflow has never executed on a GitHub runner. It was linted with `actionlint`, and the scan commands in it were run locally with the same flags (section 4).
+> **Status: NOT YET RUN ON GITHUB.** This workflow was written for this homework and never pushed to the project repository, and in this homework repository it sits inside a session folder (GitHub only runs workflows from the root `.github/workflows`), so it has never executed on a GitHub runner. It was linted with `actionlint`, and the scan commands in it were run locally with the same flags (section 4).
 
 _workflows/devsecops.yml, lines 16-41: triggers, concurrency, least-privilege permissions and the tool versions_
 
