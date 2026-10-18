@@ -1090,21 +1090,22 @@ $ docker logs tf-moto 2>&1 | sed -r "s/\x1b\[[0-9;]*m//g" | grep -E "PUT /yash" 
 
 Re-running `plan` on a matching infrastructure changes nothing.
 
+_Note: my first attempt at the next two commands failed with an operating-system file-lock error ("Device or resource busy"), so I ran them again later against a freshly applied copy of this same project (`init`, `apply`, the two commands below, `destroy`), under the same safe environment as Step 0. The counts below come from that second run._
+
 _"No changes" and exit code 0 (the "Refreshing state" lines are left out of this view)._
 
 ```console
 $ terraform plan -var-file=emulator.tfvars -detailed-exitcode > plan2.txt; echo "exit code: $?"; grep -E "No changes|^Plan:" plan2.txt; rm plan2.txt
-bash: line 1: /c/Users/gaikw/AppData/Local/Microsoft/WinGet/Packages/Hashicorp.Terraform_Microsoft.Winget.Source_8wekyb3d8bbwe/terraform: Device or resource busy
-exit code: 126
+exit code: 0
+No changes. Your infrastructure matches the configuration.
 ```
 
-_Network proof: that plan ran with provider debug logging. Every single HTTP request went to host localhost, port 5000._
+_Network proof: that plan ran with provider debug logging. Every AWS API request went to host localhost, port 5000._
 
 ```console
 $ TF_LOG=DEBUG TF_LOG_PATH=tf-debug.log terraform plan -var-file=emulator.tfvars >/dev/null; grep -oE "net.peer.(name|port)=[^ ]+" tf-debug.log | sort | uniq -c; rm tf-debug.log
-bash: line 1: /c/Users/gaikw/AppData/Local/Microsoft/WinGet/Packages/Hashicorp.Terraform_Microsoft.Winget.Source_8wekyb3d8bbwe/terraform: Device or resource busy
-grep: tf-debug.log: No such file or directory
-rm: cannot remove 'tf-debug.log': No such file or directory
+     57 net.peer.name=localhost
+     57 net.peer.port=5000
 ```
 
 **Drift.** I simulate a console click: someone re-labels the server as `prod` directly in the emulator, bypassing Terraform.

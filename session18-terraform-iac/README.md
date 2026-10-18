@@ -1003,7 +1003,7 @@ and found no differences, so no changes are needed.
 exit code: 0
 ```
 
-_Network proof: that plan ran with provider debug logging. Every single HTTP request it made went to host localhost, port 5000._
+_Network proof: that plan ran with provider debug logging. Every AWS API request it made went to host localhost, port 5000._
 
 ```console
 $ TF_LOG=DEBUG TF_LOG_PATH=tf-debug.log terraform plan -var-file=emulator.tfvars >/dev/null; grep -oE "net.peer.(name|port)=[^ ]+" tf-debug.log | sort | uniq -c; rm tf-debug.log
