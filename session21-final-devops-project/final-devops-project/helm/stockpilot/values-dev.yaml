@@ -5,6 +5,9 @@
 
 backend:
   replicaCount: 2
+  resources:
+    limits:
+      memory: 512Mi
   image:
     # a locally built image (docker build -t stockpilot-backend:local ./backend)
     repository: stockpilot-backend
