@@ -335,4 +335,317 @@ The full written notes (tools per pillar, golden signals, RED and USE methods, e
 
 ---
 
-_(the Argo CD demonstration is recorded after the repository has been pushed to GitHub)_
+## Task 3: GitOps
+
+The concepts (Git as the source of truth, declarative configuration, continuous reconciliation, the workflow, Kubernetes + GitOps, Argo CD vs Flux) are explained in [gitops/README.md](gitops/README.md). This section is the **hands-on demo** on my Minikube cluster, which is also the **mini project**: *Kubernetes + Git + GitOps + Argo CD* with a namespace, a Deployment with `replicas: 2`, a Service and an Argo CD Application.
+
+```
+   Git (desired state)                 Argo CD (in the cluster)                  Kubernetes
+ gitops/app/*.yaml  ----pull----->  compares Git with the live state  ----apply---->  Namespace, Deployment, Service
+        ^                                        |                                          |
+        |                         self-heal: reverts manual changes  <------watch-----------+
+   git commit + push  (the ONLY way to change the application)
+```
+
+### The application in Git
+
+Three small manifests in [`gitops/app/`](gitops/app): a Namespace (`gitops-demo`), a Deployment `web` with **2 replicas** (the `traefik/whoami` image) and a Service.
+
+_The Deployment (2 replicas) and the Argo CD `Application` that points at this folder of my GitHub repository, with automated sync, **prune** and **self-heal**._
+
+```console
+$ cat gitops/app/deployment.yaml | head -n 12; echo ...; cat gitops/argocd-application.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: gitops-demo
+  labels:
+    app: web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web
+...
+# Argo CD Application: "keep the cluster equal to what is in Git at this path".
+# Apply this file ONCE with kubectl; after that, every change goes through Git.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gitops-demo
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Yash-1706/devops-git-assgn.git
+    targetRevision: main
+    path: session20-monitoring-observability-gitops/gitops/app
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: gitops-demo
+  syncPolicy:
+    automated:
+      prune: true # delete cluster objects that were removed from Git
+      selfHeal: true # undo manual changes made directly in the cluster
+    syncOptions:
+      - CreateNamespace=true
+```
+
+### Install Argo CD
+
+_Install Argo CD from its official manifest (`--server-side` because the CRDs are large). The last lines of the output are shown._
+
+```console
+$ kubectl create namespace argocd 2>&1; kubectl apply -n argocd --server-side --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml 2>&1 | tail -n 5
+namespace/argocd created
+networkpolicy.networking.k8s.io/argocd-dex-server-network-policy serverside-applied
+networkpolicy.networking.k8s.io/argocd-notifications-controller-network-policy serverside-applied
+networkpolicy.networking.k8s.io/argocd-redis-network-policy serverside-applied
+networkpolicy.networking.k8s.io/argocd-repo-server-network-policy serverside-applied
+networkpolicy.networking.k8s.io/argocd-server-network-policy serverside-applied
+```
+
+_Wait until the Argo CD components are running: the application controller (compares and syncs), the repo server (reads Git and renders manifests), the API server, Redis and the others._
+
+```console
+$ kubectl rollout status statefulset/argocd-application-controller -n argocd --timeout=300s && kubectl wait --for=condition=available deployment --all -n argocd --timeout=300s && kubectl get pods -n argocd
+Waiting for 1 pods to be ready...
+partitioned roll out complete: 1 new pods have been updated...
+deployment.apps/argocd-applicationset-controller condition met
+deployment.apps/argocd-dex-server condition met
+deployment.apps/argocd-notifications-controller condition met
+deployment.apps/argocd-redis condition met
+deployment.apps/argocd-repo-server condition met
+deployment.apps/argocd-server condition met
+NAME                                                READY   STATUS    RESTARTS      AGE
+argocd-application-controller-0                     1/1     Running   0             105s
+argocd-applicationset-controller-66d7f7865d-v4tj2   1/1     Running   0             105s
+argocd-dex-server-6d8ddc4748-2zx24                  1/1     Running   1 (32s ago)   105s
+argocd-notifications-controller-6bdf867f45-79bbr    1/1     Running   0             105s
+argocd-redis-5fbd54c8cc-2md5x                       1/1     Running   0             105s
+argocd-repo-server-66875c66b4-lmrs8                 1/1     Running   0             105s
+argocd-server-7f85776b5c-khlm6                      1/1     Running   0             105s
+```
+
+### Create the Application: Git becomes the source of truth
+
+_This is the **only** `kubectl apply` I run for the application: it tells Argo CD where the desired state lives._
+
+```console
+$ kubectl apply -f gitops/argocd-application.yaml
+application.argoproj.io/gitops-demo created
+```
+
+_Argo CD fetches the repository, finds a difference between Git and the cluster and syncs it. SYNC STATUS goes `OutOfSync` -> `Synced`, HEALTH goes `Progressing` -> `Healthy`._
+
+```console
+$ for i in 1 2 3 4 5 6 7 8; do echo "[$(date +%T)] $(kubectl get application gitops-demo -n argocd --no-headers 2>&1)"; sleep 8; done
+[21:03:49] gitops-demo         
+[21:03:58] gitops-demo   Synced   Healthy
+[21:04:06] gitops-demo   Synced   Healthy
+[21:04:15] gitops-demo   Synced   Healthy
+[21:04:23] gitops-demo   Synced   Healthy
+[21:04:31] gitops-demo   Synced   Healthy
+[21:04:40] gitops-demo   Synced   Healthy
+[21:04:48] gitops-demo   Synced   Healthy
+```
+
+_Everything that is in Git now exists in the cluster: the namespace was created by Argo CD (`CreateNamespace=true`), the Deployment has 2 Pods, the Service exists._
+
+```console
+$ kubectl get all -n gitops-demo
+NAME                       READY   STATUS    RESTARTS   AGE
+pod/web-6959bcf466-cdr7c   1/1     Running   0          62s
+pod/web-6959bcf466-ssw2w   1/1     Running   0          62s
+
+NAME          TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)   AGE
+service/web   ClusterIP   10.96.39.121   <none>        80/TCP    62s
+
+NAME                  READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/web   2/2     2            2           62s
+
+NAME                             DESIRED   CURRENT   READY   AGE
+replicaset.apps/web-6959bcf466   2         2         2       62s
+```
+
+_Argo CD records which Git commit the cluster matches._
+
+```console
+$ kubectl get application gitops-demo -n argocd -o jsonpath="repo: {.spec.source.repoURL}{\"\\n\"}path: {.spec.source.path}{\"\\n\"}synced revision: {.status.sync.revision}{\"\\n\"}sync: {.status.sync.status}  health: {.status.health.status}{\"\\n\"}"
+repo: https://github.com/Yash-1706/devops-git-assgn.git
+path: session20-monitoring-observability-gitops/gitops/app
+synced revision: 35ce6ed6982ac0d061268125709b07c47ef383ce
+sync: Synced  health: Healthy
+```
+
+### Self-healing: manual changes are reverted
+
+**Drift 1: someone scales the Deployment by hand** (the cluster now differs from Git).
+
+_The manual change to 5 replicas did not survive: at the first check, 3 seconds later, Argo CD had already set it back to the 2 replicas declared in Git (the events at the end of this section show the matching partial syncs)._
+
+```console
+$ kubectl scale deployment web -n gitops-demo --replicas=5; sleep 3; echo "right after the manual change:"; kubectl get deployment web -n gitops-demo; sleep 25; echo "25 seconds later:"; kubectl get deployment web -n gitops-demo
+deployment.apps/web scaled
+right after the manual change:
+NAME   READY   UP-TO-DATE   AVAILABLE   AGE
+web    2/2     2            2           66s
+25 seconds later:
+NAME   READY   UP-TO-DATE   AVAILABLE   AGE
+web    2/2     2            2           91s
+```
+
+**Drift 2: someone deletes the Service by hand.**
+
+_Argo CD recreates the deleted object because Git still declares it._
+
+```console
+$ kubectl delete service web -n gitops-demo; sleep 20; kubectl get service -n gitops-demo
+service "web" deleted from gitops-demo namespace
+NAME   TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)   AGE
+web    ClusterIP   10.102.178.88   <none>        80/TCP    20s
+```
+
+### Change the application through Git
+
+The right way to change the application: edit the file, commit, push. I change `replicas: 2` to `replicas: 3`.
+
+_**Edit, commit and push.** (Two real commits on my repository; the second one reverts the first.)_
+
+```console
+$ sed -i 's/replicas: 2/replicas: 3/' session20-monitoring-observability-gitops/gitops/app/deployment.yaml && git diff --stat && git commit -q session20-monitoring-observability-gitops/gitops/app/deployment.yaml -m 'Scale web to 3 replicas (gitops demo)' && git push -q origin main && git log --oneline -n 2
+ session20-monitoring-observability-gitops/gitops/app/deployment.yaml | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+181d002 Scale web to 3 replicas (gitops demo)
+35ce6ed Add README index
+```
+
+_Argo CD normally polls Git every 3 minutes; I ask it to refresh now. It detects the new commit and the Deployment grows to 3 replicas, with no `kubectl` change from me._
+
+```console
+$ kubectl annotate application gitops-demo -n argocd argocd.argoproj.io/refresh=hard --overwrite >/dev/null; for i in 1 2 3 4 5 6 7 8; do echo "[$(date +%T)] $(kubectl get deployment web -n gitops-demo --no-headers)  |  $(kubectl get application gitops-demo -n argocd --no-headers | tr -s " " | cut -d" " -f2-3)"; sleep 6; done
+[21:05:51] web   2/2   2     2     117s  |  Synced Healthy
+[21:05:58] web   3/3   3     3     2m3s  |  Synced Healthy
+[21:06:05] web   3/3   3     3     2m10s  |  Synced Healthy
+[21:06:11] web   3/3   3     3     2m16s  |  Synced Healthy
+[21:06:18] web   3/3   3     3     2m23s  |  Synced Healthy
+[21:06:24] web   3/3   3     3     2m29s  |  Synced Healthy
+[21:06:31] web   3/3   3     3     2m36s  |  Synced Healthy
+[21:06:37] web   3/3   3     3     2m43s  |  Synced Healthy
+```
+
+_Three Pods, and the synced revision is the commit I just pushed._
+
+```console
+$ kubectl get pods -n gitops-demo; kubectl get application gitops-demo -n argocd -o jsonpath="synced revision: {.status.sync.revision}{\"\\n\"}"
+NAME                   READY   STATUS    RESTARTS   AGE
+web-6959bcf466-7r8bv   1/1     Running   0          50s
+web-6959bcf466-cdr7c   1/1     Running   0          2m49s
+web-6959bcf466-ssw2w   1/1     Running   0          2m49s
+synced revision: 181d002af154c4c378117189fb1a8c992293f60d
+```
+
+### Rollback with `git revert`
+
+In GitOps a rollback is just another commit.
+
+_**Revert the commit and push.**_
+
+```console
+$ git revert --no-edit HEAD >/dev/null && git push -q origin main && git log --oneline -n 3
+822b347 Revert "Scale web to 3 replicas (gitops demo)"
+181d002 Scale web to 3 replicas (gitops demo)
+35ce6ed Add README index
+```
+
+_The cluster follows Git back to 2 replicas._
+
+```console
+$ kubectl annotate application gitops-demo -n argocd argocd.argoproj.io/refresh=hard --overwrite >/dev/null; for i in 1 2 3 4 5 6 7 8; do echo "[$(date +%T)] $(kubectl get deployment web -n gitops-demo --no-headers)"; sleep 6; done
+[21:06:49] web   3/3   3     3     2m54s
+[21:06:55] web   2/2   2     2     3m
+[21:07:01] web   2/2   2     2     3m6s
+[21:07:08] web   2/2   2     2     3m13s
+[21:07:14] web   2/2   2     2     3m19s
+[21:07:20] web   2/2   2     2     3m25s
+[21:07:27] web   2/2   2     2     3m32s
+[21:07:33] web   2/2   2     2     3m38s
+```
+
+_Final state: Synced, Healthy, 2 replicas: exactly what Git says._
+
+```console
+$ kubectl get application gitops-demo -n argocd --no-headers; kubectl get deployment web -n gitops-demo
+gitops-demo   Synced   Healthy
+NAME   READY   UP-TO-DATE   AVAILABLE   AGE
+web    2/2     2            2           3m45s
+```
+
+_Argo CD keeps an event log of every sync (the commits it applied)._
+
+```console
+$ kubectl describe application gitops-demo -n argocd | sed -n "/^Events:/,\$p" | cut -c1-170
+Events:
+  Type    Reason              Age    From                           Message
+  ----    ------              ----   ----                           -------
+  Normal  OperationStarted    3m45s  argocd-application-controller  Initiated automated sync to '35ce6ed6982ac0d061268125709b07c47ef383ce'
+  Normal  ResourceUpdated     3m45s  argocd-application-controller  Updated sync status:  -> OutOfSync
+  Normal  ResourceUpdated     3m45s  argocd-application-controller  Updated health status:  -> Missing
+  Normal  ResourceUpdated     3m45s  argocd-application-controller  Updated health status: Missing -> Healthy
+  Normal  OperationCompleted  3m45s  argocd-application-controller  Sync operation to 35ce6ed6982ac0d061268125709b07c47ef383ce succeeded
+  Normal  ResourceUpdated     3m45s  argocd-application-controller  Updated sync status: OutOfSync -> Synced
+  Normal  ResourceUpdated     3m45s  argocd-application-controller  Updated health status: Healthy -> Progressing
+  Normal  ResourceUpdated     3m42s  argocd-application-controller  Updated health status: Progressing -> Healthy
+  Normal  OperationStarted    2m43s  argocd-application-controller  Initiated automated sync to '35ce6ed6982ac0d061268125709b07c47ef383ce'
+  Normal  ResourceUpdated     2m43s  argocd-application-controller  Updated sync status: Synced -> OutOfSync
+  Normal  ResourceUpdated     2m43s  argocd-application-controller  Updated health status: Healthy -> Progressing
+  Normal  OperationCompleted  2m42s  argocd-application-controller  Partial sync operation to 35ce6ed6982ac0d061268125709b07c47ef383ce succeeded
+  Normal  ResourceUpdated     2m42s  argocd-application-controller  Updated sync status: OutOfSync -> Synced
+  Normal  ResourceUpdated     2m42s  argocd-application-controller  Updated health status: Progressing -> Healthy
+  Normal  OperationStarted    2m13s  argocd-application-controller  Initiated automated sync to '35ce6ed6982ac0d061268125709b07c47ef383ce'
+  Normal  ResourceUpdated     2m13s  argocd-application-controller  Updated sync status: Synced -> OutOfSync
+  Normal  OperationCompleted  2m13s  argocd-application-controller  Partial sync operation to 35ce6ed6982ac0d061268125709b07c47ef383ce succeeded
+  Normal  ResourceUpdated     2m13s  argocd-application-controller  Updated sync status: OutOfSync -> Synced
+  Normal  OperationStarted    107s   argocd-application-controller  Initiated automated sync to '181d002af154c4c378117189fb1a8c992293f60d'
+  Normal  ResourceUpdated     107s   argocd-application-controller  Updated sync status: Synced -> OutOfSync
+  Normal  OperationCompleted  106s   argocd-application-controller  Sync operation to 181d002af154c4c378117189fb1a8c992293f60d succeeded
+  Normal  ResourceUpdated     106s   argocd-application-controller  Updated sync status: OutOfSync -> Synced
+  Normal  ResourceUpdated     106s   argocd-application-controller  Updated health status: Healthy -> Progressing
+  Normal  ResourceUpdated     104s   argocd-application-controller  Updated health status: Progressing -> Healthy
+  Normal  OperationStarted    49s    argocd-application-controller  Initiated automated sync to '822b347ed4ecd1b1f0c495d74e7d1feb5fa1dbd3'
+  Normal  ResourceUpdated     49s    argocd-application-controller  Updated sync status: Synced -> OutOfSync
+  Normal  OperationCompleted  48s    argocd-application-controller  Sync operation to 822b347ed4ecd1b1f0c495d74e7d1feb5fa1dbd3 succeeded
+  Normal  ResourceUpdated     48s    argocd-application-controller  Updated sync status: OutOfSync -> Synced
+```
+
+_Cleanup of the demo application (Argo CD itself stays for the final project demo)._
+
+```console
+$ kubectl delete application gitops-demo -n argocd; kubectl delete namespace gitops-demo --wait=true; kubectl get ns
+application.argoproj.io "gitops-demo" deleted from argocd namespace
+namespace "gitops-demo" deleted
+NAME              STATUS   AGE
+argocd            Active   5m51s
+default           Active   155m
+ingress-nginx     Active   94m
+kube-node-lease   Active   155m
+kube-public       Active   155m
+kube-system       Active   155m
+```
+
+### Push-based CI/CD versus pull-based GitOps (what I saw)
+
+| | Push (CI/CD runs `kubectl apply`) | Pull (Argo CD) |
+|---|---|---|
+| Who changes the cluster | the pipeline, with cluster credentials | a controller **inside** the cluster; CI needs no cluster access |
+| Manual change in the cluster | stays until the next deploy | **reverted in seconds** (drift 1 and 2 above) |
+| Rollback | re-run an old pipeline | `git revert` |
+| Audit trail | pipeline logs | Git history (who, when, why, reviewed in a PR) |
+
+## What I learned
+
+- Git is the **single source of truth**: the application changed three ways (create, scale, revert) and I never ran `kubectl apply` on the application manifests after the first Application.
+- **Self-heal** keeps the cluster equal to Git; **prune** removes what leaves Git. Manual edits do not survive.
+- A rollback is a commit (`git revert`), which also leaves an auditable history.
+- Argo CD polls Git (every 3 minutes by default), so a refresh or a webhook is used when speed matters.
