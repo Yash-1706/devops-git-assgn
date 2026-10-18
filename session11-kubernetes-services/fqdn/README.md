@@ -318,7 +318,7 @@ kubectl -n kube-system get svc kube-dns
 kubectl exec frontend -- nslookup backend.default.svc.cluster.local.
 ```
 
-The `nslookup` bundled in busybox is quite basic. If it behaves oddly, I can use an image that ships `dig` and the full `nslookup` (the Kubernetes DNS debugging docs use the `agnhost` test image for this).
+The `nslookup` bundled in busybox is quite basic: it does not apply the `search` list like a full resolver does. For the real runs below I therefore used an image that ships `dig` and the full `nslookup` (`infoblox/dnstools`); the Kubernetes DNS debugging docs use the `agnhost` test image for the same purpose.
 
 ---
 
