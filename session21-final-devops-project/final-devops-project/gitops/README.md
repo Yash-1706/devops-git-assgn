@@ -20,4 +20,4 @@ kubectl apply -f gitops/argocd-application.yaml
 kubectl get applications -n argocd
 ```
 
-The full workflow, a live demonstration (sync, self-heal after a manual change, and a change made through a Git commit) and the explanation of the concepts are in [Session 20](../../session20-monitoring-observability-gitops) and in the README of this project.
+The full workflow, a live demonstration (sync, self-heal after a manual change, and a change made through a Git commit) and the explanation of the concepts are in [Session 20](../../../session20-monitoring-observability-gitops) and in the README of this project.

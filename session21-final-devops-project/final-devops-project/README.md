@@ -607,9 +607,7 @@ $ kubectl port-forward -n ingress-nginx service/ingress-nginx-controller 8080:80
 docs: HTTP 200
 ```
 
-```console
-$ (open http://stockpilot.local:8080 in a browser: the screenshot below)
-```
+_I opened <http://stockpilot.local:8080> in a browser (with `stockpilot.local` pointing at the port-forwarded Ingress controller, as above): the screenshot below is the application served through the Ingress._
 
 ![StockPilot running on Kubernetes, opened through the Ingress](docs/screenshots/k8s-ingress-frontend.png)
 
