@@ -48,7 +48,7 @@ The application and the DevOps layer are my own project (it also lives in my Git
 | Monitoring (Prometheus, Grafana, alert firing and resolving) | **run** against the real backend (section 11) |
 | GitOps (Argo CD sync, self-heal, change through Git) | **run** (section 12) |
 | GitHub Actions `ci-cd.yml` | **ran on GitHub** earlier (4 green runs, Session 16); both workflows lint clean with `actionlint` |
-| `devsecops.yml` | linted, every tool in it run locally; **not run on GitHub** (nothing was pushed to run it) |
+| `devsecops.yml` | linted, every tool in it run locally; **not run on GitHub** (in this homework repository the workflow files sit inside a session folder, and GitHub only runs workflows from the root `.github/workflows`) |
 | Terraform | `fmt`, `init`, `validate` **run**; `plan/apply/destroy` against AWS **not run** (needs a real, billable AWS account); Terraform apply/destroy was demonstrated against a local AWS emulator in Sessions 18 and 19 |
 | Push to a container registry, EKS | **not run** (Minikube with locally loaded images stands in for the registry and the cluster) |
 
@@ -925,7 +925,295 @@ On Kubernetes the same metrics are scraped through the chart's `ServiceMonitor` 
 
 ## 12. GitOps
 
-_The live Argo CD demonstration is added after the repository has been pushed to GitHub (Argo CD pulls from Git)._
+The Argo CD `Application` in [`gitops/argocd-application.yaml`](gitops/argocd-application.yaml) points at the Helm chart in this repository (`helm/stockpilot` with `values-dev.yaml`). Argo CD renders the chart itself, so **the cluster is created from Git without running `helm install` by hand**. The demonstration below was run on my Minikube cluster with Argo CD installed (see [Session 20](../../session20-monitoring-observability-gitops/README.md#task-3-gitops)); it pulls the chart from my GitHub repository <https://github.com/Yash-1706/devops-git-assgn>.
+
+Two rules in the Application are worth understanding (they are the lessons of this demo):
+
+| Rule | Why |
+|---|---|
+| `ignoreDifferences` on the database **Secret** | the chart generates a random password at install time (no secret in Git). Argo CD renders with plain `helm template`, which cannot look up the existing value, so without this rule every sync would replace the password and break the database login |
+| `ignoreDifferences` on Deployment **replicas** | the HPA owns the replica count, and Argo CD must not fight the autoscaler |
+
+_The relevant part of the Application._
+
+```console
+$ cat gitops/argocd-application.yaml | sed -n "/^spec:/,/^  syncPolicy/p" | head -n 36
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Yash-1706/devops-git-assgn.git
+    targetRevision: main
+    path: session21-final-devops-project/final-devops-project/helm/stockpilot
+    helm:
+      valueFiles:
+        - values-dev.yaml # local images (tag "local"); an EKS setup would use values-eks.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: stockpilot
+  # Two things that must NOT be reconciled from Git:
+  #  - the database Secret: the chart generates a random password at install time (nothing secret
+  #    in Git), but a plain `helm template` (what Argo CD runs) cannot look up the existing value,
+  #    so without this rule every sync would replace the password and break the database login;
+  #  - the number of replicas: the HPA owns it, Argo CD must not fight the autoscaler.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      jsonPointers:
+        - /data
+        - /stringData
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
+  syncPolicy:
+```
+
+_The only `kubectl apply` for the whole application._
+
+```console
+$ kubectl apply -f gitops/argocd-application.yaml
+application.argoproj.io/stockpilot created
+```
+
+_Argo CD syncs the chart and creates every object (SYNC STATUS `Synced`). HEALTH stays `Degraded` for a couple of minutes although the Pods come up; the cause is explained in [Why was the Application `Degraded` for a while?](#why-was-the-application-degraded-for-a-while) below. The `degraded: []` column is a filter I added to name the Degraded resources; it stays empty because this version of Argo CD does not keep the health of each resource in the `Application` object._
+
+```console
+$ for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do echo "[$(date +%T)] $(kubectl get application stockpilot -n argocd --no-headers 2>&1 | tr -s " ")  degraded: [$(kubectl get application stockpilot -n argocd -o jsonpath="{.status.resources[?(@.health.status==\"Degraded\")].kind}")]"; sleep 10; done
+[21:15:34] stockpilot   degraded: []
+[21:15:44] stockpilot Synced Degraded  degraded: []
+[21:15:55] stockpilot Synced Degraded  degraded: []
+[21:16:05] stockpilot Synced Degraded  degraded: []
+[21:16:16] stockpilot Synced Degraded  degraded: []
+[21:16:27] stockpilot Synced Degraded  degraded: []
+[21:16:37] stockpilot Synced Degraded  degraded: []
+[21:16:48] stockpilot Synced Degraded  degraded: []
+[21:16:58] stockpilot Synced Degraded  degraded: []
+[21:17:09] stockpilot Synced Degraded  degraded: []
+[21:17:20] stockpilot Synced Degraded  degraded: []
+[21:17:30] stockpilot Synced Degraded  degraded: []
+[21:17:41] stockpilot Synced Degraded  degraded: []
+[21:17:51] stockpilot Synced Degraded  degraded: []
+```
+
+_The whole application, created by Argo CD from the Helm chart in Git: Deployments, the database StatefulSet with its volume, Services, the Ingress, the HPA and the ConfigMap._
+
+```console
+$ kubectl get deploy,statefulset,pods,svc,ingress,hpa,pvc,configmap -n stockpilot
+NAME                                  READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/stockpilot-backend    2/2     2            2           2m25s
+deployment.apps/stockpilot-frontend   2/2     2            2           2m25s
+
+NAME                                   READY   AGE
+statefulset.apps/stockpilot-postgres   1/1     2m25s
+
+NAME                                       READY   STATUS    RESTARTS   AGE
+pod/stockpilot-backend-7fbd656b85-57s8r    1/1     Running   0          2m25s
+pod/stockpilot-backend-7fbd656b85-8jnbq    1/1     Running   0          2m25s
+pod/stockpilot-frontend-6699c58bd7-jk8b6   1/1     Running   0          2m25s
+pod/stockpilot-frontend-6699c58bd7-snntr   1/1     Running   0          2m25s
+pod/stockpilot-postgres-0                  1/1     Running   0          2m25s
+
+NAME                          TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE
+service/stockpilot-backend    ClusterIP   10.102.244.140   <none>        8000/TCP   2m25s
+service/stockpilot-frontend   ClusterIP   10.111.222.48    <none>        80/TCP     2m25s
+service/stockpilot-postgres   ClusterIP   None             <none>        5432/TCP   2m25s
+
+NAME                                   CLASS   HOSTS              ADDRESS        PORTS   AGE
+ingress.networking.k8s.io/stockpilot   nginx   stockpilot.local   192.168.49.2   80      2m25s
+
+NAME                                                     REFERENCE                       TARGETS       MINPODS   MAXPODS   REPLICAS   AGE
+horizontalpodautoscaler.autoscaling/stockpilot-backend   Deployment/stockpilot-backend   cpu: 3%/50%   2         6         2          2m25s
+
+NAME                                               STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+persistentvolumeclaim/data-stockpilot-postgres-0   Bound    pvc-25515000-2db2-489b-81c6-2d433a344625   1Gi        RWO            standard       <unset>                 2m25s
+
+NAME                                   DATA   AGE
+configmap/kube-root-ca.crt             1      2m26s
+configmap/stockpilot-frontend-config   1      2m26s
+```
+
+_The application works through the Ingress: real data from the database and the frontend page._
+
+```console
+$ kubectl port-forward -n ingress-nginx service/ingress-nginx-controller 8080:80 > /tmp/pf-ing.txt 2>&1 & sleep 4; curl -s -H "Host: stockpilot.local" localhost:8080/api/items/stats; echo; curl -s -o /dev/null -w "frontend: HTTP %{http_code}\n" -H "Host: stockpilot.local" localhost:8080/; kill %1
+{"total_items":10,"total_units":1175,"total_value":8020.3,"low_stock":3,"out_of_stock":2,"categories":4}
+frontend: HTTP 200
+```
+
+### Self-healing on the real application: the Ingress fault comes back and is repaired by Argo CD
+
+In the troubleshooting challenge I broke the Ingress by hand and had to fix it by hand. Under GitOps the same fault repairs itself:
+
+_The wrong service name lasts only seconds: Argo CD notices the difference with Git and restores `stockpilot-backend`._
+
+```console
+$ kubectl patch ingress stockpilot -n stockpilot --type json -p "[{\"op\":\"replace\",\"path\":\"/spec/rules/0/http/paths/0/backend/service/name\",\"value\":\"stockpilot-backendd\"}]"; echo "right after the manual (wrong) change:"; kubectl describe ingress stockpilot -n stockpilot | grep -E "^  *\/api " | cut -c1-150; sleep 25; echo "25 seconds later:"; kubectl describe ingress stockpilot -n stockpilot | grep -E "^  *\/api " | cut -c1-150
+ingress.networking.k8s.io/stockpilot patched
+right after the manual (wrong) change:
+                    /api            stockpilot-backendd:http (<error: services "stockpilot-backendd" not found>)
+25 seconds later:
+                    /api            stockpilot-backend:http (10.244.0.97:8000,10.244.0.98:8000)
+```
+
+### A change through Git: more memory for the backend
+
+I raise the backend memory limit in `values-dev.yaml` (from the chart default of 384Mi to 512Mi), commit and push.
+
+_**Edit, commit and push** the values file._
+
+```console
+$ sed -i '/^backend:/,/^frontend:/ s/^  image:/  resources:\n    limits:\n      memory: 512Mi\n  image:/' session21-final-devops-project/final-devops-project/helm/stockpilot/values-dev.yaml && git diff --stat -- session21-final-devops-project/final-devops-project/helm/stockpilot/values-dev.yaml && git diff -U1 -- session21-final-devops-project/final-devops-project/helm/stockpilot/values-dev.yaml | grep -E '^[+-] ' && git commit -q session21-final-devops-project/final-devops-project/helm/stockpilot/values-dev.yaml -m 'Raise backend memory limit to 512Mi (gitops demo)' && git push -q origin main && git log --oneline -n 2
+ session21-final-devops-project/final-devops-project/helm/stockpilot/values-dev.yaml | 3 +++
+ 1 file changed, 3 insertions(+)
++  resources:
++    limits:
++      memory: 512Mi
+6ffb787 Raise backend memory limit to 512Mi (gitops demo)
+55fc6cc Add argo cd demo output (session 20)
+```
+
+_Argo CD picks up the commit and rolls the backend out with the new limit (384Mi to 512Mi), without any `helm` or `kubectl` command from me. The `Degraded` at the end is the autoscaler waiting for metrics of the new Pods (see below)._
+
+```console
+$ kubectl annotate application stockpilot -n argocd argocd.argoproj.io/refresh=hard --overwrite >/dev/null; for i in 1 2 3 4 5 6 7 8 9 10; do echo "[$(date +%T)] $(kubectl get deploy stockpilot-backend -n stockpilot -o jsonpath="limit={.spec.template.spec.containers[0].resources.limits.memory} ready={.status.readyReplicas}/{.spec.replicas}")  $(kubectl get application stockpilot -n argocd --no-headers | tr -s " " | cut -d" " -f2-3) degraded: [$(kubectl get application stockpilot -n argocd -o jsonpath="{.status.resources[?(@.health.status==\"Degraded\")].kind}")]"; sleep 8; done
+[21:18:37] limit=384Mi ready=2/2  Synced Healthy degraded: []
+[21:18:46] limit=512Mi ready=2/2  Synced Progressing degraded: []
+[21:18:55] limit=512Mi ready=2/2  Synced Progressing degraded: []
+[21:19:04] limit=512Mi ready=2/2  Synced Healthy degraded: []
+[21:19:13] limit=512Mi ready=2/2  Synced Degraded degraded: []
+[21:19:21] limit=512Mi ready=2/2  Synced Degraded degraded: []
+[21:19:30] limit=512Mi ready=2/2  Synced Degraded degraded: []
+[21:19:39] limit=512Mi ready=2/2  Synced Degraded degraded: []
+[21:19:48] limit=512Mi ready=2/2  Synced Degraded degraded: []
+[21:19:56] limit=512Mi ready=2/2  Synced Degraded degraded: []
+```
+
+_The new backend Pods are running; the synced revision is my commit._
+
+```console
+$ kubectl get pods -n stockpilot -l app.kubernetes.io/component=backend; kubectl get application stockpilot -n argocd -o jsonpath="synced revision: {.status.sync.revision}{\"\\n\"}"
+NAME                                 READY   STATUS    RESTARTS   AGE
+stockpilot-backend-997b87f69-5sgtx   1/1     Running   0          74s
+stockpilot-backend-997b87f69-fpch8   1/1     Running   0          85s
+synced revision: 6ffb787d9a3ccb62fbf6da58ed150edddaf198e4
+```
+
+### Roll back with `git revert`
+
+_The rollback is a commit._
+
+```console
+$ git revert --no-edit HEAD >/dev/null && git push -q origin main && git log --oneline -n 3
+3f33e52 Revert "Raise backend memory limit to 512Mi (gitops demo)"
+6ffb787 Raise backend memory limit to 512Mi (gitops demo)
+55fc6cc Add argo cd demo output (session 20)
+```
+
+_The cluster returns to the original limit (384Mi). The Application shows `Degraded` again for the same reason as before; the next step waits for it to turn `Healthy`._
+
+```console
+$ kubectl annotate application stockpilot -n argocd argocd.argoproj.io/refresh=hard --overwrite >/dev/null; for i in 1 2 3 4 5 6 7 8 9 10; do echo "[$(date +%T)] $(kubectl get deploy stockpilot-backend -n stockpilot -o jsonpath="limit={.spec.template.spec.containers[0].resources.limits.memory} ready={.status.readyReplicas}/{.spec.replicas}") $(kubectl get application stockpilot -n argocd --no-headers | tr -s " " | cut -d" " -f2-3) degraded: [$(kubectl get application stockpilot -n argocd -o jsonpath="{.status.resources[?(@.health.status==\"Degraded\")].kind}")]"; sleep 8; done
+[21:20:10] limit=512Mi ready=2/2 Synced Degraded degraded: []
+[21:20:19] limit=384Mi ready=2/2 Synced Degraded degraded: []
+[21:20:28] limit=384Mi ready=2/2 Synced Degraded degraded: []
+[21:20:36] limit=384Mi ready=2/2 Synced Degraded degraded: []
+[21:20:45] limit=384Mi ready=2/2 Synced Degraded degraded: []
+[21:20:54] limit=384Mi ready=2/2 Synced Degraded degraded: []
+[21:21:03] limit=384Mi ready=2/2 Synced Degraded degraded: []
+[21:21:12] limit=384Mi ready=2/2 Synced Degraded degraded: []
+[21:21:21] limit=384Mi ready=2/2 Synced Degraded degraded: []
+[21:21:29] limit=384Mi ready=2/2 Synced Degraded degraded: []
+```
+
+_Wait until the Application is `Synced` and `Healthy` again. The Application was `Degraded` after this rollout for the same reason as after the first sync (shown in the section after the cleanup)._
+
+```console
+$ for i in $(seq 1 24); do st=$(kubectl get application stockpilot -n argocd --no-headers | tr -s " " | cut -d" " -f2-3); echo "[$(date +%T)] $st"; [ "$st" = "Synced Healthy" ] && break; sleep 10; done; kubectl get hpa stockpilot-backend -n stockpilot
+[21:21:39] Synced Degraded
+[21:21:49] Synced Degraded
+[21:21:59] Synced Healthy
+NAME                 REFERENCE                       TARGETS       MINPODS   MAXPODS   REPLICAS   AGE
+stockpilot-backend   Deployment/stockpilot-backend   cpu: 3%/50%   2         6         2          6m22s
+```
+
+_Cleanup._
+
+```console
+$ kubectl delete application stockpilot -n argocd; kubectl delete namespace stockpilot --wait=true; kubectl get ns
+application.argoproj.io "stockpilot" deleted from argocd namespace
+namespace "stockpilot" deleted
+NAME              STATUS   AGE
+argocd            Active   20m
+default           Active   170m
+ingress-nginx     Active   109m
+kube-node-lease   Active   170m
+kube-public       Active   170m
+kube-system       Active   170m
+```
+
+### Why was the Application `Degraded` for a while?
+
+After every sync and after every backend rollout above, Argo CD showed `Synced` but **`Degraded`** for one to three minutes, although every Pod was `Running` and `Ready`. The last column in my polling loops was a filter meant to name the resources that were `Degraded`; it stays empty because this version of Argo CD does not keep the health of each resource inside the `Application` object. So I created the application once more from an empty cluster (no commits this time) and looked at the object I suspected: the HorizontalPodAutoscaler.
+
+_Start again from an empty cluster._
+
+```console
+$ kubectl delete application stockpilot -n argocd; kubectl delete namespace stockpilot --wait=true; kubectl apply -f gitops/argocd-application.yaml
+application.argoproj.io "stockpilot" deleted from argocd namespace
+namespace "stockpilot" deleted
+application.argoproj.io/stockpilot created
+```
+
+_One minute after the sync._
+
+```console
+$ sleep 60; kubectl get application stockpilot -n argocd --no-headers | tr -s " "; kubectl get pods -n stockpilot; kubectl get hpa -n stockpilot; kubectl describe hpa stockpilot-backend -n stockpilot | sed -n "/^Conditions:/,/^Events:/p" | cut -c1-210
+stockpilot Synced Degraded
+NAME                                   READY   STATUS    RESTARTS   AGE
+stockpilot-backend-7fbd656b85-2wqqh    1/1     Running   0          56s
+stockpilot-backend-7fbd656b85-gxjz6    1/1     Running   0          56s
+stockpilot-frontend-6699c58bd7-65m54   1/1     Running   0          56s
+stockpilot-frontend-6699c58bd7-t8sfs   1/1     Running   0          56s
+stockpilot-postgres-0                  1/1     Running   0          55s
+NAME                 REFERENCE                       TARGETS              MINPODS   MAXPODS   REPLICAS   AGE
+stockpilot-backend   Deployment/stockpilot-backend   cpu: <unknown>/50%   2         6         2          56s
+Conditions:
+  Type           Status  Reason                   Message
+  ----           ------  ------                   -------
+  AbleToScale    True    SucceededGetScale        the HPA controller was able to get the target's current scale
+  ScalingActive  False   FailedGetResourceMetric  the HPA was unable to compute the replica count: failed to get cpu utilization: unable to get metrics for resource cpu: no metrics returned from resource metric
+Events:
+```
+
+_Watching the Application and the HPA together._
+
+```console
+$ for i in $(seq 1 18); do h=$(kubectl get application stockpilot -n argocd --no-headers | tr -s " " | cut -d" " -f2-3); echo "[$(date +%T)] app: $h | hpa target: $(kubectl get hpa stockpilot-backend -n stockpilot --no-headers 2>/dev/null | tr -s " " | cut -d" " -f3-4) | ScalingActive: $(kubectl get hpa stockpilot-backend -n stockpilot -o jsonpath="{.status.conditions[?(@.type==\"ScalingActive\")].status}" 2>/dev/null)"; [ "$h" = "Synced Healthy" ] && break; sleep 10; done
+[21:26:48] app: Synced Degraded | hpa target: cpu: <unknown>/50% | ScalingActive: False
+[21:26:59] app: Synced Degraded | hpa target: cpu: <unknown>/50% | ScalingActive: False
+[21:27:10] app: Synced Degraded | hpa target: cpu: <unknown>/50% | ScalingActive: False
+[21:27:21] app: Synced Degraded | hpa target: cpu: <unknown>/50% | ScalingActive: False
+[21:27:32] app: Synced Degraded | hpa target: cpu: <unknown>/50% | ScalingActive: False
+[21:27:43] app: Synced Degraded | hpa target: cpu: <unknown>/50% | ScalingActive: False
+[21:27:54] app: Synced Healthy | hpa target: cpu: 3%/50% | ScalingActive: True
+```
+
+_Cleanup._
+
+```console
+$ kubectl delete application stockpilot -n argocd; kubectl delete namespace stockpilot --wait=true; kubectl get ns
+application.argoproj.io "stockpilot" deleted from argocd namespace
+namespace "stockpilot" deleted
+NAME              STATUS   AGE
+argocd            Active   26m
+default           Active   176m
+ingress-nginx     Active   115m
+kube-node-lease   Active   176m
+kube-public       Active   176m
+kube-system       Active   176m
+```
+
+**What this shows:** the Pods were never unhealthy. While the HPA could not read any CPU metric (`TARGETS` is `<unknown>`, condition `ScalingActive` is `False` with reason `FailedGetResourceMetric`), Argo CD reported the whole Application as `Degraded`. In every observation the Application turned `Healthy` in the same ten-second window in which the HPA got its first CPU value (`3%/50%`, `ScalingActive` `True`). This happens after the first sync and after every backend rollout, because metrics-server needs some time to report brand-new Pods. It needs no fix, but it is worth knowing: **`Degraded` in Argo CD is not always a broken application**, and the Pods, events and the HPA conditions are the first things to read.
 
 ## 13. Troubleshooting
 
